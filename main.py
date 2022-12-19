@@ -1,11 +1,11 @@
+import os
 from aiogram import Bot, types, Dispatcher, executor
 from random import choice, shuffle
 
 from data.tasks import Task
-
-from config import TOKEN
 from data import db_session
 
+TOKEN = os.environ.get('TOKEN')
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 db_session.global_init("db/ege.db")
