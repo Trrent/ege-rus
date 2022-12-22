@@ -13,3 +13,6 @@ class Task(SqlAlchemyBase):
     explanation = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     correct_option = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
     rule_id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey("rules.id"), nullable=True)
+
+    def __repr__(self):
+        return f"Task(id={self.id}, type={self.type}"
