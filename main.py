@@ -1,7 +1,7 @@
 import os
 from aiogram import Bot, types, Dispatcher, executor
 from aiogram.dispatcher import filters
-from random import choice, shuffle
+from random import choice, shuffle, sample
 
 from data.tasks import Task
 from data.users import User
@@ -14,8 +14,10 @@ db_session.global_init("db/ege.db")
 
 task_buttons = {4: '4️⃣',
                 8: '8️⃣',
+                9: '9️⃣',
                 '4️⃣': 4,
-                '8️⃣': 8}
+                '8️⃣': 8,
+                '9️⃣': 9}
 
 
 @dp.message_handler(commands=['start'])
@@ -59,19 +61,26 @@ async def send_poll(user_id, type):
         session = db_session.create_session()
         tasks = session.query(Task).filter(Task.type == type).all()
         task = choice(tasks)
-        options = task.options.split('%')
+        if type == 9:
+            correct_option = choice(task.correct_option.split('%'))
+            options = sample(task.options.split('%'), 3)
+            options.append(correct_option)
+        else:
+            options = task.options.split('%')
+            correct_option = task.correct_option
         if task.rule:
             explanation = '\n'.join(task.rule.rule.split('\\n'))
         else:
-            explanation = task.correct_option
+            explanation = correct_option
         shuffle(options)
         await bot.send_poll(chat_id=user_id,
                             question=task.question,
                             options=options,
                             type='quiz',
                             explanation=explanation,
-                            correct_option_id=options.index(task.correct_option),
-                            is_anonymous=False)
+                            correct_option_id=options.index(correct_option),
+                            is_anonymous=False,
+                            reply_markup=types.ReplyKeyboardRemove())
     except Exception as e:
         await bot.send_message(chat_id=MY_ID, text=e)
         if task:
@@ -85,7 +94,7 @@ async def send_menu(message: types.Message = None, user_id=None):
     if not user_id:
         user_id = message.from_user.id
     keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    keyboard.row(types.KeyboardButton(task_buttons[4]), types.KeyboardButton(task_buttons[8]))
+    keyboard.row(types.KeyboardButton(task_buttons[4]), types.KeyboardButton(task_buttons[8]), types.KeyboardButton(task_buttons[9]))
     await bot.send_message(chat_id=user_id, text='Выберете тип задания для тренировки\n\nДля остановки используйте /stop',
                            reply_markup=keyboard)
 
