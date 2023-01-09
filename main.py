@@ -1,5 +1,7 @@
+import logging
 import os
 from aiogram import Bot, types, Dispatcher, executor
+from aiogram.utils.executor import start_webhook
 from aiogram.dispatcher import filters
 from random import choice, shuffle, sample
 
@@ -18,6 +20,15 @@ task_buttons = {4: '4️⃣',
                 '4️⃣': 4,
                 '8️⃣': 8,
                 '9️⃣': 9}
+
+APP_NAME = os.getenv('APP_NAME')
+
+WEBHOOK_HOST = f'https://{APP_NAME}.up.railway.app'
+WEBHOOK_PATH = f'/webhook/{TOKEN}'
+WEBHOOK_URL = f'{WEBHOOK_HOST}{WEBHOOK_PATH}'
+
+WEBAPP_HOST = '0.0.0.0'
+WEBAPP_PORT = os.getenv('PORT', default=8000)
 
 
 @dp.message_handler(commands=['start'])
@@ -94,10 +105,30 @@ async def send_menu(message: types.Message = None, user_id=None):
     if not user_id:
         user_id = message.from_user.id
     keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    keyboard.row(types.KeyboardButton(task_buttons[4]), types.KeyboardButton(task_buttons[8]), types.KeyboardButton(task_buttons[9]))
-    await bot.send_message(chat_id=user_id, text='Выберете тип задания для тренировки\n\nДля остановки используйте /stop',
+    keyboard.row(types.KeyboardButton(task_buttons[4]), types.KeyboardButton(task_buttons[8]),
+                 types.KeyboardButton(task_buttons[9]))
+    await bot.send_message(chat_id=user_id,
+                           text='Выберете тип задания для тренировки\n\nДля остановки используйте /stop',
                            reply_markup=keyboard)
 
 
+async def on_startup(dispatcher):
+    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+
+
+async def on_shutdown(dispatcher):
+    await bot.delete_webhook()
+
+
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    logging.basicConfig(level=logging.INFO)
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        skip_updates=True,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        host=WEBAPP_HOST,
+        port=WEBAPP_PORT,
+    )
+    # executor.start_polling(dp, skip_updates=True)
