@@ -17,9 +17,15 @@ db_session.global_init("db/ege.db")
 task_buttons = {4: '4️⃣',
                 8: '8️⃣',
                 9: '9️⃣',
+                10: '🔟',
+                11: '1️⃣1️⃣',
+                12: '1️⃣2️⃣',
                 '4️⃣': 4,
                 '8️⃣': 8,
-                '9️⃣': 9}
+                '9️⃣': 9,
+                '🔟': 10,
+                '1️⃣1️⃣': 11,
+                '1️⃣2️⃣': 12}
 
 APP_NAME = os.getenv('APP_NAME')
 
@@ -29,6 +35,9 @@ WEBHOOK_URL = f'{WEBHOOK_HOST}{WEBHOOK_PATH}'
 
 WEBAPP_HOST = '0.0.0.0'
 WEBAPP_PORT = os.getenv('PORT', default=8000)
+
+
+MY_ID = os.environ.get('MY_ID')
 
 
 @dp.message_handler(commands=['start'])
@@ -72,7 +81,7 @@ async def send_poll(user_id, type):
         session = db_session.create_session()
         tasks = session.query(Task).filter(Task.type == type).all()
         task = choice(tasks)
-        if type == 9:
+        if type in [9, 10, 11, 12]:
             correct_option = choice(task.correct_option.split('%'))
             options = sample(task.options.split('%'), 3)
             options.append(correct_option)
@@ -82,7 +91,7 @@ async def send_poll(user_id, type):
         if task.rule:
             explanation = '\n'.join(task.rule.rule.split('\\n'))
         else:
-            explanation = correct_option
+            explanation = None
         shuffle(options)
         await bot.send_poll(chat_id=user_id,
                             question=task.question,
@@ -107,13 +116,19 @@ async def send_menu(message: types.Message = None, user_id=None):
     keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
     keyboard.row(types.KeyboardButton(task_buttons[4]), types.KeyboardButton(task_buttons[8]),
                  types.KeyboardButton(task_buttons[9]))
+    keyboard.row(types.KeyboardButton(task_buttons[10]), types.KeyboardButton(task_buttons[11]),
+                 types.KeyboardButton(task_buttons[12]))
     await bot.send_message(chat_id=user_id,
-                           text='Выберете тип задания для тренировки\n\nДля остановки используйте /stop',
+                           text='Выберите тип задания для тренировки\n\nДля остановки используйте /stop',
                            reply_markup=keyboard)
 
 
 async def on_startup(dispatcher):
     await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+    session = db_session.create_session()
+    users = session.query(User).all()
+    for user in users:
+        await bot.send_message(chat_id=user.user_id, text='Бот обновился!\nДля перезапуска напиши /start')
 
 
 async def on_shutdown(dispatcher):
@@ -131,4 +146,3 @@ if __name__ == '__main__':
         host=WEBAPP_HOST,
         port=WEBAPP_PORT,
     )
-    # executor.start_polling(dp, skip_updates=True)
