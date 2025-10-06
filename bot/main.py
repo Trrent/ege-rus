@@ -1,190 +1,303 @@
+import asyncio
+import csv
 import logging
 import os
-from aiogram import Bot, types, Dispatcher
-from aiogram.dispatcher import filters
-from random import choice, shuffle, sample
+from pathlib import Path
+from random import choice, sample, shuffle
+from typing import Optional, Union
 
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import Command, CommandStart
+from aiogram.filters.command import CommandObject
+from aiogram.types import (
+    FSInputFile,
+    KeyboardButton,
+    Message,
+    PollAnswer,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    Update,
+)
+from dotenv import load_dotenv
+
+from data import db_session
 from data.tasks import Task
 from data.users import User
-from data import db_session
+
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR.parent / ".env")
+
+TOKEN = os.getenv("TOKEN")
+MY_ID = os.getenv("MY_ID")
+
+if not TOKEN:
+    raise RuntimeError("Environment variable TOKEN must be provided.")
+
+MY_ID_INT = int(MY_ID) if MY_ID and MY_ID.isdigit() else None
+
+TASK_BUTTONS = {
+    4: "4️⃣",
+    7: "7️⃣",
+    8: "8️⃣",
+    9: "9️⃣",
+    10: "🔟",
+    11: "1️⃣1️⃣",
+    12: "1️⃣2️⃣",
+}
+def init_database() -> None:
+    db_path = BASE_DIR / "db" / "ege.db"
+    db_session.global_init(str(db_path))
 
 
-task_buttons = {4: '4️⃣',
-                7: '7️⃣',
-                8: '8️⃣',
-                9: '9️⃣',
-                10: '🔟',
-                11: '1️⃣1️⃣',
-                12: '1️⃣2️⃣',
-                '4️⃣': 4,
-                '7️⃣': 7,
-                '8️⃣': 8,
-                '9️⃣': 9,
-                '🔟': 10,
-                '1️⃣1️⃣': 11,
-                '1️⃣2️⃣': 12}
+init_database()
 
-TOKEN = os.environ.get('TOKEN')
-bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
-MY_ID = os.environ.get('MY_ID')
+BUTTON_TO_TASK = {emoji: task_type for task_type, emoji in TASK_BUTTONS.items()}
 
+router = Router()
 
-async def start(message: types.Message):
-    await message.answer(f'Привет, {message.from_user.first_name}')
-    user_id = message.from_user.id
-    db_sess = db_session.create_session()
-    user = db_sess.query(User).filter(User.user_id == user_id).first()
-    if not user:
-        user = User(user_id=user_id)
-        db_sess.add(user)
-        db_sess.commit()
-        logging.info(f"New user: {user_id}")
-        await bot.send_message(chat_id=MY_ID, text=f"New user: @{message.from_user.username}\n{user_id}")
-    await send_menu(message=message)
+def build_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text=TASK_BUTTONS[4]),
+                KeyboardButton(text=TASK_BUTTONS[7]),
+                KeyboardButton(text=TASK_BUTTONS[8]),
+            ],
+            [
+                KeyboardButton(text=TASK_BUTTONS[9]),
+                KeyboardButton(text=TASK_BUTTONS[10]),
+                KeyboardButton(text=TASK_BUTTONS[11]),
+            ],
+            [KeyboardButton(text=TASK_BUTTONS[12])],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
 
+async def send_menu(bot: Bot, user_id: int) -> None:
+    await bot.send_message(
+        chat_id=user_id,
+        text="Выберите тип задания для тренировки\n\nДля остановки используйте /stop",
+        reply_markup=build_menu_keyboard(),
+    )
 
-async def poll_answer(poll_answer: types.PollAnswer):
-    user_id = poll_answer.user.id
+async def send_poll(bot: Bot, user_id: int, task_type: int) -> None:
+    session = db_session.create_session()
+    task: Optional[Task] = None
     try:
-        db_sess = db_session.create_session()
-        user = db_sess.query(User).filter(User.user_id == poll_answer.user.id).first()
-        if user:
-            if user.task_type:
-                await send_poll(user_id, type=user.task_type)
-            else:
-                await send_menu(user_id=user_id)
-        else:
-            await send_menu(user_id=user_id)
-    except Exception as e:
-        await exception_handler(e, user_id)
+        tasks = session.query(Task).filter(Task.type == task_type).all()
+        if not tasks:
+            raise ValueError(f"Нет заданий типа {task_type}.")
 
-
-async def poll(message: types.Message):
-    user_id = message.from_user.id
-    try:
-        db_sess = db_session.create_session()
-        user = db_sess.query(User).filter(User.user_id == message.from_user.id).first()
-        if not user:
-            user = User(user_id=user_id, task_type=task_buttons[message.text])
-            db_sess.add(user)
-            db_sess.commit()
-            logging.info(f"New user: {user_id}")
-            await bot.send_message(chat_id=MY_ID, text=f"New user: @{message.from_user.username}\n{user_id}")
-        else:
-            user.task_type = task_buttons[message.text]
-            db_sess.commit()
-        await send_poll(user_id, type=task_buttons[message.text])
-    except Exception as e:
-        await exception_handler(e, user_id)
-
-
-async def send_poll(user_id, type):
-    task = None
-    explanation = None
-    try:
-        session = db_session.create_session()
-        tasks = session.query(Task).filter(Task.type == type).all()
         task = choice(tasks)
-        if type in [9, 10, 11, 12]:
-            correct_option = choice(task.correct_option.split('%'))
-            options = sample(task.options.split('%'), 3)
-            options.append(correct_option)
-        elif type == 7:
-            correct_option, explanation = choice(task.correct_option.split('%')).split('(')
-            options = sample(task.options.split('%'), 4)
-            options.append(correct_option)
+        explanation: Optional[str] = None
+        options_pool = task.options.split("%")
+        correct_option: Optional[str] = None
+
+        if task_type in {9, 10, 11, 12}:
+            correct_option = choice(task.correct_option.split("%"))
+            sample_size = min(3, len(options_pool))
+            options = sample(options_pool, k=sample_size)
+            if correct_option not in options:
+                options.append(correct_option)
+        elif task_type == 7:
+            raw_correct = choice(task.correct_option.split("%"))
+            if "(" in raw_correct:
+                correct_option, explanation = raw_correct.split("(", maxsplit=1)
+                explanation = explanation.rstrip(")")
+            else:
+                correct_option = raw_correct
+            sample_size = min(4, len(options_pool))
+            options = sample(options_pool, k=sample_size)
+            if correct_option not in options:
+                options.append(correct_option)
         else:
-            options = task.options.split('%')
             correct_option = task.correct_option
-        if task.rule:
-            explanation = '\n'.join(task.rule.rule.split('\\n'))
+            options = options_pool
+
+        if task.rule and task.rule.rule:
+            explanation = "\n".join(task.rule.rule.split("\\n"))
+
         shuffle(options)
-        await bot.send_poll(chat_id=user_id,
-                            question=task.question,
-                            options=options,
-                            type='quiz',
-                            explanation=explanation,
-                            correct_option_id=options.index(correct_option),
-                            is_anonymous=False,
-                            reply_markup=types.ReplyKeyboardRemove())
-    except Exception as e:
-        await exception_handler(e, user_id, task)
+        await bot.send_poll(
+            chat_id=user_id,
+            question=task.question,
+            options=options,
+            type="quiz",
+            explanation=explanation,
+            correct_option_id=options.index(correct_option),
+            is_anonymous=False,
+            reply_markup=ReplyKeyboardRemove(),
+        )
+    except Exception as error:
+        await exception_handler(bot, error, user_id, task)
+    finally:
+        session.close()
 
+async def exception_handler(
+    bot: Bot,
+    error: Union[Exception, str],
+    user_id: Optional[int],
+    task: Optional[Task] = None,
+) -> None:
+    message = str(error)
+    logging.exception("Exception while processing update: %s", message)
+    if MY_ID_INT is None:
+        return
 
-async def send_menu(message: types.Message = None, user_id=None):
-    if not user_id:
-        user_id = message.from_user.id
-    keyboard = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-    keyboard.row(types.KeyboardButton(task_buttons[4]), types.KeyboardButton(task_buttons[7]),
-                 types.KeyboardButton(task_buttons[8]))
-    keyboard.row(types.KeyboardButton(task_buttons[9]), types.KeyboardButton(task_buttons[10]),
-                 types.KeyboardButton(task_buttons[11]))
-    keyboard.row(types.KeyboardButton(task_buttons[12]))
-    await bot.send_message(chat_id=user_id,
-                           text='Выберите тип задания для тренировки\n\nДля остановки используйте /stop',
-                           reply_markup=keyboard)
+    await bot.send_message(chat_id=MY_ID_INT, text=message)
+    if task is not None:
+        await bot.send_message(chat_id=MY_ID_INT, text=f"Task id: {task.id}")
 
-
-async def send_all(message: types.Message):
+@router.message(CommandStart())
+async def start_handler(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id
+    await message.answer(f"Привет, {message.from_user.first_name}")
+
+    session = db_session.create_session()
     try:
-        if int(user_id) != int(MY_ID):
-            return
-        _, text = message.text.split(' ', maxsplit=1)
-        if text:
-            session = db_session.create_session()
-            users = session.query(User).all()
-            for user in users:
-                await bot.send_message(chat_id=user.id, text=text)
-    except Exception as e:
-        await exception_handler(e, user_id)
+        user = session.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            user = User(user_id=user_id)
+            session.add(user)
+            session.commit()
+            logging.info("New user: %s", user_id)
+            if MY_ID_INT is not None:
+                await bot.send_message(
+                    chat_id=MY_ID_INT,
+                    text=f"New user: @{message.from_user.username}\n{user_id}",
+                )
+    except Exception as error:
+        await exception_handler(bot, error, user_id)
+        return
+    finally:
+        session.close()
 
+    await send_menu(bot, user_id)
 
-async def send_users_table(message: types.Message):
+@router.message(Command(commands=["menu", "stop", "help"]))
+async def menu_handler(message: Message, bot: Bot) -> None:
+    await send_menu(bot, message.from_user.id)
+
+@router.message(F.text.in_(tuple(BUTTON_TO_TASK.keys())))
+async def poll_handler(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id
+    task_type = BUTTON_TO_TASK.get(message.text)
+    if task_type is None:
+        await send_menu(bot, user_id)
+        return
+
+    session = db_session.create_session()
     try:
-        if int(user_id) != int(MY_ID):
-            return
-        session = db_session.create_session()
-        with open('users.csv', 'w', newline='') as outfile:
-            file = csv.writer(outfile)
+        user = session.query(User).filter(User.user_id == user_id).first()
+        is_new_user = user is None
+
+        if is_new_user:
+            user = User(user_id=user_id, task_type=task_type)
+            session.add(user)
+        else:
+            user.task_type = task_type
+
+        session.commit()
+
+        if is_new_user and MY_ID_INT is not None:
+            logging.info("New user: %s", user_id)
+            await bot.send_message(
+                chat_id=MY_ID_INT,
+                text=f"New user: @{message.from_user.username}\n{user_id}",
+            )
+
+        await send_poll(bot, user_id, task_type)
+    except Exception as error:
+        await exception_handler(bot, error, user_id)
+    finally:
+        session.close()
+
+@router.poll_answer()
+async def poll_answer_handler(poll_answer: PollAnswer, bot: Bot) -> None:
+    user_id = poll_answer.user.id
+    session = db_session.create_session()
+    try:
+        user = session.query(User).filter(User.user_id == user_id).first()
+        if user and user.task_type:
+            await send_poll(bot, user_id, user.task_type)
+        else:
+            await send_menu(bot, user_id)
+    except Exception as error:
+        await exception_handler(bot, error, user_id)
+    finally:
+        session.close()
+
+@router.message(Command("send_all"))
+async def send_all_handler(
+    message: Message,
+    bot: Bot,
+    command: CommandObject,
+) -> None:
+    user_id = message.from_user.id
+    if MY_ID_INT is None or int(user_id) != MY_ID_INT:
+        return
+
+    if not command.args:
+        await message.answer("Укажите текст рассылки после команды.")
+        return
+
+    session = db_session.create_session()
+    try:
+        users = session.query(User).all()
+        for user in users:
+            await bot.send_message(chat_id=user.user_id, text=command.args)
+    except Exception as error:
+        await exception_handler(bot, error, user_id)
+    finally:
+        session.close()
+
+@router.message(Command("users"))
+async def send_users_table_handler(message: Message, bot: Bot) -> None:
+    user_id = message.from_user.id
+    if MY_ID_INT is None or int(user_id) != MY_ID_INT:
+        return
+
+    temp_path = BASE_DIR / "users.csv"
+    session = db_session.create_session()
+    try:
+        with temp_path.open("w", newline="", encoding="utf-8") as outfile:
+            writer = csv.writer(outfile)
             records = session.query(User).all()
-            for user in records:
-                file.writerow([getattr(user, col.name) for col in User.__mapper__.columns])
-        with open('users.csv', 'r') as outfile:
-            await bot.send_document(chat_id=user_id, document=outfile)
-        os.remove('users.csv')
-    except Exception as e:
-        await exception_handler(e, user_id)
+            for record in records:
+                writer.writerow([getattr(record, column.name) for column in User.__mapper__.columns])
 
+        document = FSInputFile(temp_path)
+        await bot.send_document(chat_id=user_id, document=document)
+    except Exception as error:
+        await exception_handler(bot, error, user_id)
+    finally:
+        session.close()
+        if temp_path.exists():
+            temp_path.unlink()
 
-async def exception_handler(exception_text, user_id, task=None):
-    logging.error(f"Exception: {exception_text}")
-    await bot.send_message(chat_id=MY_ID, text=exception_text)
-    if task:
-        await bot.send_message(chat_id=MY_ID, text=str(task.id))
+async def process_update_event(update_data: dict) -> str:
+    dispatcher = get_dispatcher()
+    update = Update.model_validate(update_data)
+    async with Bot(token=TOKEN) as bot:
+        await dispatcher.feed_update(bot, update)
+    return "ok"
 
-# Selectel Lambda funcs
-async def register_handlers(dp: Dispatcher):
-    dp.register_message_handler(start, commands=["start"])
-    dp.register_message_handler(send_menu, commands=["menu"])
-    dp.register_message_handler(send_menu, commands=["stop"])
-    dp.register_message_handler(send_menu, commands=["help"])
-    dp.register_message_handler(poll, filters.Text(equals=task_buttons.values()))
-    dp.register_poll_answer_handler(poll_answer)
+def get_dispatcher() -> Dispatcher:
+    dispatcher = Dispatcher()
+    dispatcher.include_router(router)
+    return dispatcher
 
+async def run_bot() -> None:
+    logging.basicConfig(level=logging.INFO)
+    init_database()
+    dispatcher = get_dispatcher()
+    async with Bot(token=TOKEN) as bot:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dispatcher.start_polling(bot)
 
-async def process_event(update, dp: Dispatcher):
-    Bot.set_current(dp.bot)
-    await dp.process_update(update)
+def main() -> None:
+    asyncio.run(run_bot())
 
-# Selectel serverless entry point
-async def main(**kwargs):
-    db_session.global_init(os.sep.join([os.path.abspath(os.path.dirname(__file__)), "db", "ege.db"]))
-    await register_handlers(dp)
-
-    update = types.Update.to_object(kwargs)
-    await process_event(update, dp)
-
-    return 'ok'
+if __name__ == "__main__":
+    main()
